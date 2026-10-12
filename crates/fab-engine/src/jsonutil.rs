@@ -3,6 +3,7 @@
 //! so these are fabcraft's own copies of the same idea: refuse hostile/missing input with a clear
 //! `EngineError`, never a panic, never a silent default where one isn't explicitly allowed.
 
+use cadcraft_doc::Handle;
 use cadcraft_engine::{EngineError, Result};
 use cadcraft_geom::Vec2;
 use serde_json::Value;
@@ -54,6 +55,25 @@ pub fn point_req(cmd: &str, p: &Value, key: &str) -> Result<Vec2> {
     p.get(key)
         .and_then(point_value)
         .ok_or_else(|| bad(cmd, format!("`{key}` ([x, y]) is required")))
+}
+
+/// `handles: [hex, ...]`: at least one, every one a valid hex handle — never a silently-skipped
+/// bad entry, since that would classify less geometry than the caller asked for.
+pub fn handles_req(cmd: &str, p: &Value, key: &str) -> Result<Vec<Handle>> {
+    let arr = p
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad(cmd, format!("`{key}` must be a non-empty array of handles")))?;
+    if arr.is_empty() {
+        return Err(bad(cmd, format!("`{key}` must have at least one handle")));
+    }
+    arr.iter()
+        .map(|v| {
+            v.as_str()
+                .and_then(Handle::parse_hex)
+                .ok_or_else(|| bad(cmd, format!("`{key}`: \"{v}\" is not a valid hex handle")))
+        })
+        .collect()
 }
 
 /// A positive size (a thickness, a diameter...): refused if present but not a positive finite

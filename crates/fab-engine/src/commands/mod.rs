@@ -2,6 +2,7 @@
 //! `crate::dispatch` is what merges the two for callers (the command line, menus, MCP).
 
 pub mod bent_profile;
+pub mod classify;
 pub mod plate;
 pub mod profile;
 pub mod shared;
@@ -15,6 +16,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(plate::specs());
         v.extend(profile::specs());
         v.extend(bent_profile::specs());
+        v.extend(classify::specs());
         v.extend(crate::fabdim::specs());
         v
     })

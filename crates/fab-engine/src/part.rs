@@ -45,8 +45,12 @@ impl PartKind {
         }
     }
 
+    /// Builds a `PartKind` from the same tag strings `tag_value`/the attributes use. Public (at
+    /// crate scope) so `fabclassify` can turn already-drawn freehand geometry into a Part from
+    /// the same single set of fields the smart tools fill in automatically — see the design
+    /// spec §3's "single question" classification path.
     #[allow(clippy::too_many_arguments)]
-    fn from_tag(
+    pub(crate) fn from_tag(
         tag: &str,
         thickness: f64,
         catalog_ref: Option<String>,
