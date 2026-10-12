@@ -137,7 +137,14 @@ fn run_bent_profile(s: &mut Session, p: &Value) -> Result<Value> {
     let at = point_or(p, "at", Vec2::ZERO);
     let outline = folded_outline(at, &flanges, &bend_angles);
     let material = str_or(p, "material", "").to_string();
-    let part = PartData::new(PartKind::BentProfile { thickness }, material);
+    let part = PartData::new(
+        PartKind::BentProfile {
+            thickness,
+            bend_radius: radius,
+            k_factor,
+        },
+        material,
+    );
     let mut result = build_part(s, cmd, part, &outline, false, p)?;
     result["flatLength"] = serde_json::json!(flat);
     Ok(result)

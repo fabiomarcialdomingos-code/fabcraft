@@ -12,6 +12,8 @@ pub const TAG_KIND: &str = "FABKIND";
 pub const TAG_THICKNESS: &str = "FABTHICK";
 pub const TAG_MATERIAL: &str = "FABMATERIAL";
 pub const TAG_CATALOG: &str = "FABCATALOG";
+pub const TAG_BEND_RADIUS: &str = "FABBENDR";
+pub const TAG_K_FACTOR: &str = "FABKFACTOR";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PartKind {
@@ -22,9 +24,15 @@ pub enum PartKind {
     Profile { catalog_ref: Option<String> },
     /// A round or rectangular hollow section.
     Tube { catalog_ref: Option<String> },
-    /// A sheet-metal part with one or more bends; `thickness` drives the flat-pattern
-    /// (bend-allowance) calculation in `bent_profile.rs`.
-    BentProfile { thickness: f64 },
+    /// A sheet-metal part with one or more bends; `thickness`, `bend_radius` and `k_factor` are
+    /// exactly what `bent_profile::flat_length` needs — persisted here because, unlike flange
+    /// lengths and bend angles (recoverable from the folded polyline's own geometry), they leave
+    /// no geometric trace to read back later.
+    BentProfile {
+        thickness: f64,
+        bend_radius: f64,
+        k_factor: f64,
+    },
 }
 
 impl PartKind {
@@ -37,12 +45,23 @@ impl PartKind {
         }
     }
 
-    fn from_tag(tag: &str, thickness: f64, catalog_ref: Option<String>) -> Option<PartKind> {
+    #[allow(clippy::too_many_arguments)]
+    fn from_tag(
+        tag: &str,
+        thickness: f64,
+        catalog_ref: Option<String>,
+        bend_radius: f64,
+        k_factor: f64,
+    ) -> Option<PartKind> {
         match tag {
             "PLATE" => Some(PartKind::Plate { thickness }),
             "PROFILE" => Some(PartKind::Profile { catalog_ref }),
             "TUBE" => Some(PartKind::Tube { catalog_ref }),
-            "BENT" => Some(PartKind::BentProfile { thickness }),
+            "BENT" => Some(PartKind::BentProfile {
+                thickness,
+                bend_radius,
+                k_factor,
+            }),
             _ => None,
         }
     }
@@ -70,8 +89,17 @@ impl PartData {
             (TAG_MATERIAL, self.material.clone()),
         ];
         match &self.kind {
-            PartKind::Plate { thickness } | PartKind::BentProfile { thickness } => {
+            PartKind::Plate { thickness } => {
                 v.push((TAG_THICKNESS, format!("{thickness}")));
+            }
+            PartKind::BentProfile {
+                thickness,
+                bend_radius,
+                k_factor,
+            } => {
+                v.push((TAG_THICKNESS, format!("{thickness}")));
+                v.push((TAG_BEND_RADIUS, format!("{bend_radius}")));
+                v.push((TAG_K_FACTOR, format!("{k_factor}")));
             }
             PartKind::Profile { catalog_ref } | PartKind::Tube { catalog_ref } => {
                 v.push((TAG_CATALOG, catalog_ref.clone().unwrap_or_default()));
@@ -91,11 +119,16 @@ impl PartData {
                 .map(|a| a.text.value.clone())
         };
         let kind_tag = get(TAG_KIND)?;
-        let thickness = get(TAG_THICKNESS)
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
+        let parse = |tag: &str, default: f64| {
+            get(tag)
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(default)
+        };
+        let thickness = parse(TAG_THICKNESS, 0.0);
+        let bend_radius = parse(TAG_BEND_RADIUS, thickness);
+        let k_factor = parse(TAG_K_FACTOR, 0.33);
         let catalog_ref = get(TAG_CATALOG).filter(|s| !s.is_empty());
-        let kind = PartKind::from_tag(&kind_tag, thickness, catalog_ref)?;
+        let kind = PartKind::from_tag(&kind_tag, thickness, catalog_ref, bend_radius, k_factor)?;
         let material = get(TAG_MATERIAL).unwrap_or_default();
         Some(PartData { kind, material })
     }
@@ -165,7 +198,14 @@ mod tests {
 
     #[test]
     fn round_trips_a_bent_profile() {
-        let part = PartData::new(PartKind::BentProfile { thickness: 1.5 }, "Aço galvanizado");
+        let part = PartData::new(
+            PartKind::BentProfile {
+                thickness: 1.5,
+                bend_radius: 2.0,
+                k_factor: 0.4,
+            },
+            "Aço galvanizado",
+        );
         let attribs: Vec<Attrib> = part
             .attdef_values()
             .into_iter()
