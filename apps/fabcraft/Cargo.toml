@@ -1,0 +1,19 @@
+[package]
+name = "fabcraft"
+description = "fabcraft desktop app: the full cadcraft CAD interface, reused as-is, plus a fabrication side panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cadcraft-engine = { workspace = true }
+cadcraft-io = { workspace = true }
+cadcraft-ui-egui = { workspace = true }
+fab-engine = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+egui = { workspace = true }
+serde_json = { workspace = true }

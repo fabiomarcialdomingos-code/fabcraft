@@ -21,10 +21,13 @@ cadcraft-doc = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97
 cadcraft-engine = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
 cadcraft-io = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
 cadcraft-render = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+cadcraft-ui-egui = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

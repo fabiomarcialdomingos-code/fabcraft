@@ -8,9 +8,10 @@ and view layout eat most of the clock on every part.
 
 fabcraft is built **on top of [cadcraft](https://github.com/storytold/cadcraft)**, a clean-room,
 open-source, pure-Rust CAD engine — fabcraft never forks or copies cadcraft's code. Its
-`Cargo.toml` depends on cadcraft's crates as a pinned git dependency; bumping that pin is how
-fabcraft pulls in cadcraft's future engine fixes and features for free. fabcraft adds only what's
-new: the Part model and the automatic fabrication-drawing pipeline, in its own `fab-engine` crate.
+`Cargo.toml` depends on cadcraft's crates (including the full `cadcraft-ui-egui` interface) as a
+pinned git dependency; bumping that pin is how fabcraft pulls in cadcraft's future engine fixes
+and features for free. fabcraft adds only what's new: the Part model and the automatic
+fabrication-drawing pipeline, in its own `fab-engine` crate, plus a thin app layer.
 
 fabcraft is conceptually inspired by the real commercial product **TecnoMETAL** (Steel & Graphics,
 runs on BricsCAD) — but is a clean-room, independent implementation. No code, UI, icons, file
@@ -23,50 +24,70 @@ tool's bundled data.
 ## What works today (v1 core, all tested)
 
 - **The Part model** (`fab_engine::part`): a Part is a cadcraft block instance whose attributes
-  carry its fabrication data (kind, thickness, material, catalog reference). The internal
-  `PartData`/`PartKind` representation is decoupled from that storage mechanism on purpose — it
-  can move to a different storage (e.g. XDATA) later without touching anything that reads it.
+  carry its fabrication data (kind, thickness, material, catalog reference, and — for bent
+  profiles — bend radius/K-factor). The internal `PartData`/`PartKind` representation is decoupled
+  from that storage mechanism on purpose — it can move to a different storage (e.g. XDATA) later
+  without touching anything that reads it.
 - **Smart drawing commands** (`plate`, `profile`, `tube`, `bent-profile`): draw the part's
   geometry and tag it as a Part in one atomic step. Freehand drawing with cadcraft's own
   `line`/`pline`/`circle` is completely untouched — nothing is imposed on the draftsman.
-- **`fabdim` ("Cotar Desenho")** — the automatic dimensioning pipeline. **Fully implemented and
-  tested for Plate parts**: overall width/height dimensions (real, associative cadcraft dimension
-  entities — moving the geometry moves the dimension, for free, from cadcraft's own engine), a
-  hole table, a thickness/material callout, and a sheet chosen by the layout algorithm below.
-- **The sheet "hero sizing" algorithm** (`fab_engine::layout_fit`): picks the smallest standard
-  sheet size and the clearest standard engineering scale (1:1, 1:2, 1:5, ... 1:200) that fits
-  everything that needs to appear, instead of a fixed A4 or a fixed scale. Pure, exhaustively
-  tested function, independent of any drawing side effect.
+- **`fabclassify`** — the single-question path for geometry a smart tool never touched: turns
+  already-drawn freehand entities into a real Part by filling the same fields a smart tool fills
+  in automatically. Proven to make `fabdim` accept the result exactly like a smart-tool part.
+- **`fabdim` ("Cotar Desenho")** — the automatic dimensioning pipeline, **implemented and tested
+  for all four PartKinds**:
+  - *Plate*: overall width/height, a hole table, a thickness/material callout.
+  - *Profile/Tube*: overall length, a hole table, and — when the part references a catalog
+    section — a cross-section mini-view drawn from the catalog's own dimensions (never fabricated
+    for a free/uncatalogued section).
+  - *BentProfile*: per-flange dimensions and bend-angle callouts on the folded view, plus the
+    flat/unfolded view at the recomputed flat-pattern length. Flange lengths and bend angles are
+    read back from the folded polyline's own geometry (no separate storage needed); only bend
+    radius and K-factor are persisted on the Part. A test proves `fabdim` recovers the *exact* flat
+    length the drawing command itself computed at creation time, from geometry alone.
+
+  Every dimension fabdim creates is a real, associative cadcraft dimension entity — moving the
+  geometry moves the dimension, for free, from cadcraft's own engine (`DIMASSOC`).
+- **The sheet "hero sizing" algorithm** (`fab_engine::layout_fit`), **wired to a real viewport**:
+  picks the smallest standard sheet size and the clearest standard engineering scale (1:1, 1:2,
+  1:5, ... 1:200) that fits everything that needs to appear, then creates the layout and points its
+  viewport at the part using cadcraft's own `viewport.set` (`scale: "1:N"`, `center`) — not just a
+  reported decision, an actually-generated sheet.
 - **The flat-pattern (bend-allowance) math** for bent/sheet-metal parts (`fab_engine::commands::bent_profile`):
   the standard published formula `BA = angle × (radius + K·thickness)`, tested against hand-worked
   reference values. This was flagged in the design spec as the highest technical risk in v1 and
   got the most test coverage for exactly that reason.
+- **A desktop GUI** (`apps/fabcraft`): the full `cadcraft-ui-egui` interface — drawing, dimensions,
+  blocks, hatch, layouts, plotting, all of it — reused wholesale and unmodified, plus a side panel
+  with buttons for fabcraft's own commands. See "Why a side panel, not new menu entries" below for
+  why. Launches and closes cleanly (checked); the panel's buttons currently draw *fixed demo
+  parameters* (a 100×100×5mm plate, a 2m U100x50x3 profile, etc.) rather than exposing a parameter
+  form — clicking through and confirming the visuals look right needs a person at the keyboard,
+  which this session couldn't do for a native window.
 - **`fabcraft-cli`**: a headless CLI (mirroring `cadcraft-cli`) that reaches every fabcraft command
-  through the same JSON form the eventual UI/MCP layer will use — see "Try it" below.
+  through the same JSON form the GUI and any future MCP layer use.
 
-Run `cargo test --workspace` — 34 tests, including the design spec's own worked example end to
-end (a 100×100×5mm plate with 7 Ø10mm holes).
+Run `cargo test --workspace` — 40 tests, including the design spec's own worked example end to
+end (a 100×100×5mm plate with 7 Ø10mm holes) and the bent-profile flat-length round trip.
+
+### Why a side panel, not new entries in cadcraft's own menus/command line
+
+cadcraft-engine's command registry (`find_command`) is a private static list sealed inside that
+crate, and cadcraft-ui-egui's own command dispatch (`CadApp::run`/`cmdline`) calls into it from
+roughly 18 different files spread across that crate. There is no single point to make either one
+aware of fabcraft's commands without forking cadcraft-ui-egui — which the whole point of a pinned
+git dependency (zero fork, zero copy) rules out. `CadApp.session` is a public field, though, so
+fabcraft's side panel calls `fab_engine::dispatch::execute` on it directly, bypassing `CadApp::run`
+entirely — a clean extension point that needed no change to cadcraft's code at all. The trade-off:
+fab commands aren't (yet) reachable by typing them into cadcraft's existing command line, only
+through fabcraft's own buttons.
 
 ## What's explicitly not done yet (honest, not hidden)
 
-- **Profile/Tube/BentProfile dimensioning.** Their smart drawing commands work, and (for
-  BentProfile) the hard flat-pattern math is implemented and tested — but `fabdim` refuses them
-  with a clear "not available yet" error rather than guessing at a template. Only Plate's
-  dimensioning is real.
-- **The native GUI.** fabcraft is CLI-first in this build. Reusing `cadcraft-ui-egui` for a real
-  UI (toolbars for the smart tools, a BOM/hole-table panel, the single-question classification
-  prompt for freehand geometry) is the next concrete step, not started.
-- **Wiring the chosen sheet to an actual viewport view.** `fabdim` creates the destination layout
-  and reports the chosen sheet size and scale in its JSON result — the sheet-choice *decision*
-  (the actual "hero sizing" logic) is complete and tested. Panning/zooming the layout's viewport
-  to physically match that choice (cadcraft's `view.set`/`mview` paper-space machinery) is not
-  wired up yet; verifying that integration correctly was out of this session's budget, and
-  shipping unverified integration code would be worse than flagging the gap.
-- **The classification question for freehand geometry.** Smart tools always tag a Part
-  automatically. Plain `line`/`pline`/`circle` geometry does not — a one-question flow that fills
-  the same fields `fabdim` could then use is designed (see the spec) but not implemented.
-- **A fab command's undo is not atomic.** `plate`/`profile`/`tube`/`bent-profile`/`fabdim` each
-  compose several native cadcraft commands (`pline`, `attdef`, `block`, `dimlinear`, `table`...).
+- **The GUI panel's parameter forms.** Buttons draw fixed demo parameters today (see above). A
+  real form (profile/catalog picker, thickness/material fields, a hole editor) is the next step.
+- **A fab command's undo is not atomic.** `plate`/`profile`/`tube`/`bent-profile`/`fabdim`/`fabclassify`
+  each compose several native cadcraft commands (`pline`, `attdef`, `block`, `dimlinear`, `table`...).
   Each of those gets cadcraft's own real undo step and panic guard — but cadcraft's internal
   undo/assoc bookkeeping that would merge them into one step is private to the cadcraft-engine
   crate and out of reach from here. Undoing a `plate` call takes a few Ctrl+Z, not one.
@@ -75,6 +96,8 @@ end (a 100×100×5mm plate with 7 Ø10mm holes).
   for the normal "draw, then dimension" flow, a known gap otherwise.
 - The profile catalog (`fab_engine::catalog`) has a handful of illustrative sizes, not a complete
   standard-shapes table.
+- No parametric structural-element library, weld lists/connection tables, sheet nesting, or
+  CAM/NC output — all explicitly phase 2+ per the design spec, not v1 scope at all.
 
 ## Try it
 
@@ -87,14 +110,28 @@ cargo run -p fabcraft-cli -- run --sample \
   --save out.dxf
 
 cargo run -p fabcraft-cli -- commands        # every cadcraft command, plus fabcraft's own (marked "(fab)")
+cargo run -p fabcraft                        # the desktop GUI
 ```
+
+### Windows build setup
+
+Needs a Rust toolchain and, on Windows, a linker for the crates that bind to native Windows APIs
+(`windows-sys` and friends, pulled in by `eframe`/`wgpu` for the GUI). Either works:
+
+- **GNU (lighter, what this repo was developed with):** `rustup toolchain install stable-x86_64-pc-windows-gnu && rustup default stable-x86_64-pc-windows-gnu`,
+  plus a MinGW-w64 distribution on `PATH` for `dlltool.exe` (e.g. `winget install BrechtSanders.WinLibs.POSIX.UCRT`).
+  Without it, `cargo build -p fabcraft` fails at `dlltool.exe: program not found` — `fab-engine`
+  and `fabcraft-cli` alone (no GUI) don't need this.
+- **MSVC (what cadcraft's own official Windows binaries use):** install the "Desktop development
+  with C++" workload via Visual Studio Build Tools; no separate MinGW install needed.
 
 ## Repository layout
 
 ```
 Cargo.toml                 workspace; pins cadcraft's crates as a git dependency
-crates/fab-engine/          the Part model, smart commands, fabdim, layout_fit, catalog
+crates/fab-engine/          the Part model, smart commands, fabdim, layout_fit, catalog, dispatch
 apps/fabcraft-cli/          headless CLI (mirrors cadcraft-cli)
+apps/fabcraft/              desktop GUI (cadcraft-ui-egui, reused, plus the fabcraft side panel)
 ```
 
 To pull in a newer cadcraft, bump the `rev` on every `cadcraft-*` entry in the root `Cargo.toml`
