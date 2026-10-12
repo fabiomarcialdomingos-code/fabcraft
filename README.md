@@ -59,11 +59,15 @@ tool's bundled data.
   got the most test coverage for exactly that reason.
 - **A desktop GUI** (`apps/fabcraft`): the full `cadcraft-ui-egui` interface — drawing, dimensions,
   blocks, hatch, layouts, plotting, all of it — reused wholesale and unmodified, plus a side panel
-  with buttons for fabcraft's own commands. See "Why a side panel, not new menu entries" below for
-  why. Launches and closes cleanly (checked); the panel's buttons currently draw *fixed demo
-  parameters* (a 100×100×5mm plate, a 2m U100x50x3 profile, etc.) rather than exposing a parameter
-  form — clicking through and confirming the visuals look right needs a person at the keyboard,
-  which this session couldn't do for a native window.
+  with real input forms for fabcraft's own commands (`apps/fabcraft/src/forms.rs`): editable
+  width/height/thickness/material and an add/remove hole list for Plate, a catalog picker
+  (`ComboBox`, populated from `fab_engine::catalog::names()`) or a free-height field for
+  Profile/Tube, flange/bend-angle/thickness/K-factor fields for BentProfile, and a "classify the
+  current selection" form that reads `CadApp.session.selection()` live. See "Why a side panel, not
+  new menu entries" below for why it's a side panel. Verified with real screenshots, not just "it
+  compiles": launches and closes cleanly, and every field renders fully visible beside cadcraft's
+  own Layers/Properties docks (the first cut's window size overflowed this machine's display and
+  clipped the panel — fixed after a screenshot caught it).
 - **`fabcraft-cli`**: a headless CLI (mirroring `cadcraft-cli`) that reaches every fabcraft command
   through the same JSON form the GUI and any future MCP layer use.
 
@@ -84,8 +88,8 @@ through fabcraft's own buttons.
 
 ## What's explicitly not done yet (honest, not hidden)
 
-- **The GUI panel's parameter forms.** Buttons draw fixed demo parameters today (see above). A
-  real form (profile/catalog picker, thickness/material fields, a hole editor) is the next step.
+- **The GUI's command line still can't reach fab commands** (see "Why a side panel" above) — only
+  the side panel's own buttons can.
 - **A fab command's undo is not atomic.** `plate`/`profile`/`tube`/`bent-profile`/`fabdim`/`fabclassify`
   each compose several native cadcraft commands (`pline`, `attdef`, `block`, `dimlinear`, `table`...).
   Each of those gets cadcraft's own real undo step and panic guard — but cadcraft's internal
