@@ -10,6 +10,11 @@
 //! git dependency, zero fork) rules out. `CadApp.session` is a public field, though, so this
 //! panel calls `fab_engine::dispatch::execute` on it directly, bypassing `CadApp::run` — a clean
 //! extension point that needed no changes to cadcraft-ui-egui at all.
+//!
+//! The panel also has its own command-line box (`id {json}`, the same form `fabcraft-cli`
+//! takes): it goes through the same `dispatch::execute`, so it reaches fab commands *and* falls
+//! through to any native cadcraft command — a typed entry point for fab commands that cadcraft's
+//! own built-in command line can't reach (see above), without needing one either.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -30,6 +35,7 @@ struct FabApp {
     cad: CadApp,
     last_part: Option<String>,
     status: String,
+    cmdline_text: String,
     plate: forms::PlateForm,
     profile: forms::SectionForm,
     tube: forms::SectionForm,
@@ -51,6 +57,7 @@ impl FabApp {
             ),
             last_part: None,
             status: String::new(),
+            cmdline_text: String::new(),
             plate: forms::PlateForm::default(),
             profile: forms::SectionForm::default(),
             tube: forms::SectionForm::default(),
@@ -71,6 +78,27 @@ impl FabApp {
         }
         self.cad.session.touch();
     }
+
+    /// Parses `id {json}` (an empty or missing `{json}` means `{}`) and runs it through the same
+    /// merged dispatcher every button in this panel uses — so typed input reaches fab commands
+    /// *and* any native cadcraft command, one box for both.
+    fn run_cmdline(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let (id, json_part) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+        let json_part = json_part.trim();
+        let json_part = if json_part.is_empty() {
+            "{}"
+        } else {
+            json_part
+        };
+        match serde_json::from_str::<Value>(json_part) {
+            Ok(params) => self.run(id, params),
+            Err(e) => self.status = format!("{id}: parâmetros inválidos ({json_part}): {e}"),
+        }
+    }
 }
 
 impl eframe::App for FabApp {
@@ -86,6 +114,16 @@ impl eframe::App for FabApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("fabcraft");
+
+                    ui.label("Linha de comando (fab + cadcraft): id {json}");
+                    let resp = ui.text_edit_singleline(&mut self.cmdline_text);
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        let text = std::mem::take(&mut self.cmdline_text);
+                        self.run_cmdline(&text);
+                        resp.request_focus();
+                    }
+                    ui.separator();
+
                     ui.add_enabled_ui(self.last_part.is_some(), |ui| {
                         if ui.button("Cotar Desenho (última peça)").clicked()
                             && let Some(h) = self.last_part.clone()

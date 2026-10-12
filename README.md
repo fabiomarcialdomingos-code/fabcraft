@@ -68,11 +68,27 @@ tool's bundled data.
   compiles": launches and closes cleanly, and every field renders fully visible beside cadcraft's
   own Layers/Properties docks (the first cut's window size overflowed this machine's display and
   clipped the panel — fixed after a screenshot caught it).
+- **Atomic undo.** A fab command composes several native cadcraft calls internally (`pline`,
+  `attdef`, `block`, ...) — `fab_engine::dispatch::execute` snapshots the document first, lets
+  those sub-calls push their own steps as usual, then on success collapses them into the single
+  undo step a fab command should be (`DocState::undo`/`push_undo` turned out to be fully public,
+  not sealed as a first pass assumed). Proven by a test: drawing a plate pushes exactly one undo
+  entry, and undoing it once fully restores the pre-plate drawing.
+- **Correct dimensioning after a general edit.** `fabdim` reconstructs a Part's world-space
+  geometry with the real cadcraft INSERT transform (translation, independent X/Y scale, rotation —
+  verified against `EntityKind::transform`'s own semantics by reading it, not guessing), not a
+  translation-only shortcut. Proven end to end: a plate scaled 2x and rotated 90° by cadcraft's
+  real `scale`/`rotate` commands still dimensions correctly, checked by reading the created
+  dimension and hole-table entities back and comparing to hand-worked expected values.
+- **A GUI command line for fab commands.** The side panel has its own `id {json}` box (the same
+  form `fabcraft-cli` takes), going through the same `dispatch::execute` — so it reaches fab
+  commands *and* falls through to any native cadcraft command, from one box.
 - **`fabcraft-cli`**: a headless CLI (mirroring `cadcraft-cli`) that reaches every fabcraft command
   through the same JSON form the GUI and any future MCP layer use.
 
-Run `cargo test --workspace` — 40 tests, including the design spec's own worked example end to
-end (a 100×100×5mm plate with 7 Ø10mm holes) and the bent-profile flat-length round trip.
+Run `cargo test --workspace` — 46 tests, including the design spec's own worked example end to
+end (a 100×100×5mm plate with 7 Ø10mm holes), the bent-profile flat-length round trip, the
+single-undo-step proof, and the scale+rotate dimensioning proof.
 
 ### Why a side panel, not new entries in cadcraft's own menus/command line
 
@@ -82,24 +98,16 @@ roughly 18 different files spread across that crate. There is no single point to
 aware of fabcraft's commands without forking cadcraft-ui-egui — which the whole point of a pinned
 git dependency (zero fork, zero copy) rules out. `CadApp.session` is a public field, though, so
 fabcraft's side panel calls `fab_engine::dispatch::execute` on it directly, bypassing `CadApp::run`
-entirely — a clean extension point that needed no change to cadcraft's code at all. The trade-off:
-fab commands aren't (yet) reachable by typing them into cadcraft's existing command line, only
-through fabcraft's own buttons.
+entirely — a clean extension point that needed no change to cadcraft's code at all. The GUI panel's
+own command-line box (above) is how fab commands get a typed entry point despite this, without
+needing one in cadcraft's own command line.
 
 ## What's explicitly not done yet (honest, not hidden)
 
-- **The GUI's command line still can't reach fab commands** (see "Why a side panel" above) — only
-  the side panel's own buttons can.
-- **A fab command's undo is not atomic.** `plate`/`profile`/`tube`/`bent-profile`/`fabdim`/`fabclassify`
-  each compose several native cadcraft commands (`pline`, `attdef`, `block`, `dimlinear`, `table`...).
-  Each of those gets cadcraft's own real undo step and panic guard — but cadcraft's internal
-  undo/assoc bookkeeping that would merge them into one step is private to the cadcraft-engine
-  crate and out of reach from here. Undoing a `plate` call takes a few Ctrl+Z, not one.
-- **Scale/rotation edge case.** `fabdim`'s world-coordinate reconstruction assumes a Part was
-  only ever translated (moved) after creation, not scaled or rotated by a general edit — correct
-  for the normal "draw, then dimension" flow, a known gap otherwise.
-- The profile catalog (`fab_engine::catalog`) has a handful of illustrative sizes, not a complete
-  standard-shapes table.
+- The profile catalog (`fab_engine::catalog`) has 24 sizes across four families (U, W, L, tube) —
+  substantially more than the first cut's 6, but still not, and never really able to be, a
+  "complete" table of every structural shape that exists; the free/uncatalogued path (`catalogRef`
+  simply omitted) is how anything not in it gets drawn and dimensioned anyway.
 - No parametric structural-element library, weld lists/connection tables, sheet nesting, or
   CAM/NC output — all explicitly phase 2+ per the design spec, not v1 scope at all.
 
