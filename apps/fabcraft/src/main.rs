@@ -20,6 +20,8 @@
 )]
 #![forbid(unsafe_code)]
 
+mod forms;
+
 use cadcraft_engine::Session;
 use cadcraft_ui_egui::{CadApp, Services};
 use serde_json::{Value, json};
@@ -28,6 +30,11 @@ struct FabApp {
     cad: CadApp,
     last_part: Option<String>,
     status: String,
+    plate: forms::PlateForm,
+    profile: forms::SectionForm,
+    tube: forms::SectionForm,
+    bent: forms::BentForm,
+    classify: forms::ClassifyForm,
 }
 
 impl FabApp {
@@ -44,6 +51,11 @@ impl FabApp {
             ),
             last_part: None,
             status: String::new(),
+            plate: forms::PlateForm::default(),
+            profile: forms::SectionForm::default(),
+            tube: forms::SectionForm::default(),
+            bent: forms::BentForm::default(),
+            classify: forms::ClassifyForm::default(),
         }
     }
 
@@ -69,35 +81,78 @@ impl eframe::App for FabApp {
         self.cad.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::right("fabcraft_panel").resizable(false).show(ui, |ui| {
-            ui.heading("fabcraft");
-            ui.label("Desenhar peça (demo — parâmetros fixos nesta build):");
-            ui.separator();
-            if ui.button("Desenhar Chapa 100×100×5, 7 furos").clicked() {
-                let holes: Vec<Value> = (0..7).map(|i| json!({"center": [10.0 + i as f64 * 12.0, 50.0], "diameter": 10.0})).collect();
-                self.run("plate", json!({"width": 100.0, "height": 100.0, "thickness": 5.0, "material": "A36", "holes": holes}));
-            }
-            if ui.button("Desenhar Perfil U 100x50x3, 2000mm").clicked() {
-                self.run("profile", json!({"length": 2000.0, "catalogRef": "U 100x50x3"}));
-            }
-            if ui.button("Desenhar Tubo QUAD 40x40x2, 1500mm").clicked() {
-                self.run("tube", json!({"length": 1500.0, "catalogRef": "TUBO QUAD 40x40x2"}));
-            }
-            if ui.button("Desenhar Perfil Dobrado (cantoneira 50+50, 90°)").clicked() {
-                self.run("bent-profile", json!({"flanges": [50.0, 50.0], "bendAngles": [90.0], "thickness": 1.5, "material": "Aço galvanizado"}));
-            }
-            ui.separator();
-            ui.add_enabled_ui(self.last_part.is_some(), |ui| {
-                if ui.button("Cotar Desenho (última peça)").clicked()
-                    && let Some(h) = self.last_part.clone()
-                {
-                    self.run("fabdim", json!({"handle": h}));
-                }
+        egui::Panel::right("fabcraft_panel")
+            .resizable(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("fabcraft");
+                    ui.add_enabled_ui(self.last_part.is_some(), |ui| {
+                        if ui.button("Cotar Desenho (última peça)").clicked()
+                            && let Some(h) = self.last_part.clone()
+                        {
+                            self.run("fabdim", json!({"handle": h}));
+                        }
+                    });
+                    ui.separator();
+
+                    egui::CollapsingHeader::new("Desenhar Chapa")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            self.plate.ui(ui);
+                            if ui.button("Desenhar").clicked() {
+                                let params = self.plate.params();
+                                self.run("plate", params);
+                            }
+                        });
+
+                    egui::CollapsingHeader::new("Desenhar Perfil").show(ui, |ui| {
+                        self.profile.ui(ui, "fab_profile_catalog");
+                        if ui.button("Desenhar").clicked() {
+                            let params = self.profile.params();
+                            self.run("profile", params);
+                        }
+                    });
+
+                    egui::CollapsingHeader::new("Desenhar Tubo").show(ui, |ui| {
+                        self.tube.ui(ui, "fab_tube_catalog");
+                        if ui.button("Desenhar").clicked() {
+                            let params = self.tube.params();
+                            self.run("tube", params);
+                        }
+                    });
+
+                    egui::CollapsingHeader::new("Desenhar Perfil Dobrado").show(ui, |ui| {
+                        self.bent.ui(ui);
+                        if ui.button("Desenhar").clicked() {
+                            let params = self.bent.params();
+                            self.run("bent-profile", params);
+                        }
+                    });
+
+                    egui::CollapsingHeader::new("Classificar seleção").show(ui, |ui| {
+                        let n = self.cad.session.selection().len();
+                        ui.label(format!("{n} objeto(s) selecionado(s) no desenho"));
+                        self.classify.ui(ui);
+                        ui.add_enabled_ui(n > 0, |ui| {
+                            if ui.button("Classificar").clicked() {
+                                let handles: Vec<String> = self
+                                    .cad
+                                    .session
+                                    .selection()
+                                    .iter()
+                                    .map(|h| h.hex())
+                                    .collect();
+                                let params = self.classify.params(handles);
+                                self.run("fabclassify", params);
+                            }
+                        });
+                    });
+
+                    ui.separator();
+                    ui.label("Status:");
+                    ui.label(&self.status);
+                });
             });
-            ui.separator();
-            ui.label("Status:");
-            ui.label(&self.status);
-        });
         self.cad.ui(ui);
     }
     fn on_exit(&mut self) {
@@ -112,8 +167,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("fabcraft")
-            .with_inner_size([1600.0, 1000.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_inner_size([1200.0, 820.0])
+            .with_min_inner_size([760.0, 480.0])
+            .with_position([10.0, 10.0]),
         persist_window: false,
         ..Default::default()
     };
