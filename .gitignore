@@ -1,0 +1,6 @@
+*~
+/target
+*.swp
+.DS_Store
+# scratch output from manual CLI runs, never a build artifact to keep
+*.dxf

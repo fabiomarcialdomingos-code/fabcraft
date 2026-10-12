@@ -1,0 +1,16 @@
+[package]
+name = "fab-engine"
+description = "fabcraft engine: the Part model, smart fabrication drawing commands, automatic dimensioning and sheet layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cadcraft-geom = { workspace = true }
+cadcraft-doc = { workspace = true }
+cadcraft-engine = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

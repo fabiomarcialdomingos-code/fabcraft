@@ -1,0 +1,16 @@
+[package]
+name = "fabcraft-cli"
+description = "fabcraft command-line tool: headless Part drawing, automatic dimensioning, commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cadcraft-engine = { workspace = true }
+cadcraft-io = { workspace = true }
+fab-engine = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+repository = "https://github.com/fabiomarcialdomingos-code/fabcraft"
+
+[workspace.dependencies]
+# internal
+fab-engine = { path = "crates/fab-engine" }
+
+# cadcraft, pinned to a rev of the public upstream repo. Bump this rev to pull in cadcraft's
+# future fixes/features. fabcraft never forks or copies cadcraft's code — this is the git
+# dependency mechanism the design spec calls for.
+cadcraft-geom = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+cadcraft-doc = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+cadcraft-engine = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+cadcraft-io = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+cadcraft-render = { git = "https://github.com/storytold/cadcraft", rev = "6ca8cec97dd7b573119679ab9fb6fe3ed43491d8" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
