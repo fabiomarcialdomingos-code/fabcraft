@@ -7,7 +7,7 @@
 //! Part, via `commands::bent_profile::flat_length`). Every template ends by choosing a sheet
 //! (`layout_fit::choose_sheet_and_scale`) and wiring it to a real viewport (`place_on_sheet`).
 
-use cadcraft_doc::{Block, EntityKind, Handle, LwPolyline};
+use cadcraft_doc::{Block, EntityKind, Handle, Insert, LwPolyline};
 use cadcraft_engine::cmd::{CommandSpec, has_doc};
 use cadcraft_engine::{Result, Session};
 use cadcraft_geom::{Bounds2, Vec2};
@@ -39,23 +39,66 @@ fn handle_param(p: &Value) -> Result<Handle> {
         })
 }
 
+/// The general cadcraft INSERT transform — translation, independent X/Y scale, and rotation —
+/// from a block's own local coordinates to world coordinates. This is the exact transform
+/// cadcraft itself applies when it draws an Insert (AutoCAD's own INSERT semantics): subtract the
+/// block's base point, scale, rotate, then translate to the insert point. An earlier build
+/// assumed scale=1/rotation=0 (translation only), which is only correct for a Part that has never
+/// been touched by MOVE/ROTATE/SCALE since the smart tool drew it; this handles the general case,
+/// so a Part edited by any of those still dimensions against its *current*, real geometry.
+#[derive(Clone, Copy)]
+struct Transform {
+    base: Vec2,
+    insert: Vec2,
+    scale: Vec2,
+    /// Radians (cadcraft stores `Insert::rotation` in radians, already converted from the
+    /// degrees a command's JSON form takes).
+    rotation: f64,
+}
+
+impl Transform {
+    fn from_insert(block_base: Vec2, insert: &Insert) -> Self {
+        Transform {
+            base: block_base,
+            insert: insert.insert.xy(),
+            scale: insert.scale.xy(),
+            rotation: insert.rotation,
+        }
+    }
+
+    fn to_world(self, p: Vec2) -> Vec2 {
+        let rel = Vec2::new(
+            (p.x - self.base.x) * self.scale.x,
+            (p.y - self.base.y) * self.scale.y,
+        );
+        let (sin, cos) = self.rotation.sin_cos();
+        Vec2::new(
+            rel.x * cos - rel.y * sin + self.insert.x,
+            rel.x * sin + rel.y * cos + self.insert.y,
+        )
+    }
+}
+
 /// The outline's bounding box and every hole's (center, diameter), all in world coordinates.
-/// fabcraft's own smart commands always create a Part at `base == insert.insert` (scale 1,
-/// rotation 0), so a plain translation by `insert.insert - block.base` reconstructs world
-/// coordinates correctly even if the part was moved afterwards (MOVE only changes `insert.insert`).
-/// A part later scaled or rotated by a general edit is a known v1 limitation, not handled here.
-fn part_geometry(block: &Block, world_offset: Vec2) -> (Bounds2, Vec<(Vec2, f64)>) {
+fn part_geometry(block: &Block, transform: &Transform) -> (Bounds2, Vec<(Vec2, f64)>) {
     let mut outline_bounds = Bounds2::EMPTY;
     let mut holes = Vec::new();
     for e in block.entities.iter() {
         match &e.kind {
             EntityKind::LwPolyline(pl) => {
                 for v in &pl.vertices {
-                    outline_bounds.add(v.p + world_offset);
+                    outline_bounds.add(transform.to_world(v.p));
                 }
             }
             EntityKind::Circle(c) => {
-                holes.push((c.center.xy() + world_offset, c.radius * 2.0));
+                // A hole's "diameter" after a non-uniform scale is ambiguous (it's an ellipse by
+                // then); cadcraft's own `scale` command only exposes a single uniform `factor`
+                // (see its params), so holes stay circular under every edit this transform has to
+                // handle — using the X scale for the diameter is exact in that case.
+                holes.push((
+                    transform.to_world(c.center.xy()),
+                    c.radius * 2.0 * transform.scale.x,
+                ));
             }
             _ => {}
         }
@@ -66,7 +109,7 @@ fn part_geometry(block: &Block, world_offset: Vec2) -> (Bounds2, Vec<(Vec2, f64)
 fn run_fabdim(s: &mut Session, p: &Value) -> Result<Value> {
     let handle = handle_param(p)?;
 
-    let (part, block_name, world_offset) = {
+    let (part, block_name, transform) = {
         let doc = s.doc()?;
         let entity = doc
             .entity(handle)
@@ -86,18 +129,18 @@ fn run_fabdim(s: &mut Session, p: &Value) -> Result<Value> {
             .blocks
             .get(&insert.block)
             .ok_or_else(|| bad("fabdim", "the Part's block definition is missing"))?;
-        let offset = insert.insert.xy() - block.base.xy();
-        (part, insert.block.clone(), offset)
+        let transform = Transform::from_insert(block.base.xy(), &insert);
+        (part, insert.block.clone(), transform)
     };
 
     match part.kind {
         PartKind::Plate { thickness } => {
-            dim_plate(s, &block_name, world_offset, thickness, &part.material)
+            dim_plate(s, &block_name, &transform, thickness, &part.material)
         }
         PartKind::Profile { catalog_ref } => dim_profile_or_tube(
             s,
             &block_name,
-            world_offset,
+            &transform,
             "PERFIL",
             catalog_ref.as_deref(),
             &part.material,
@@ -105,7 +148,7 @@ fn run_fabdim(s: &mut Session, p: &Value) -> Result<Value> {
         PartKind::Tube { catalog_ref } => dim_profile_or_tube(
             s,
             &block_name,
-            world_offset,
+            &transform,
             "TUBO",
             catalog_ref.as_deref(),
             &part.material,
@@ -117,7 +160,7 @@ fn run_fabdim(s: &mut Session, p: &Value) -> Result<Value> {
         } => dim_bent_profile(
             s,
             &block_name,
-            world_offset,
+            &transform,
             thickness,
             bend_radius,
             k_factor,
@@ -162,10 +205,10 @@ fn hole_table(s: &mut Session, bounds: Bounds2, holes: &[(Vec2, f64)]) -> Result
 
 /// The world-coordinate vertices of the first open or closed polyline found in `block` — the
 /// one entity every smart tool's outline/footprint/folded-strip is drawn as.
-fn outline_vertices(block: &Block, world_offset: Vec2) -> Option<Vec<Vec2>> {
+fn outline_vertices(block: &Block, transform: &Transform) -> Option<Vec<Vec2>> {
     block.entities.iter().find_map(|e| match &e.kind {
         EntityKind::LwPolyline(LwPolyline { vertices, .. }) => {
-            Some(vertices.iter().map(|v| v.p + world_offset).collect())
+            Some(vertices.iter().map(|v| transform.to_world(v.p)).collect())
         }
         _ => None,
     })
@@ -174,7 +217,7 @@ fn outline_vertices(block: &Block, world_offset: Vec2) -> Option<Vec<Vec2>> {
 fn dim_plate(
     s: &mut Session,
     block_name: &str,
-    world_offset: Vec2,
+    transform: &Transform,
     thickness: f64,
     material: &str,
 ) -> Result<Value> {
@@ -184,7 +227,7 @@ fn dim_plate(
             .blocks
             .get(block_name)
             .ok_or_else(|| bad("fabdim", "the Part's block definition is missing"))?;
-        part_geometry(block, world_offset)
+        part_geometry(block, transform)
     };
     if bounds.is_empty() {
         return Err(bad(
@@ -279,7 +322,7 @@ fn place_on_sheet(s: &mut Session, block_name: &str, content: Bounds2) -> Result
 fn dim_profile_or_tube(
     s: &mut Session,
     block_name: &str,
-    world_offset: Vec2,
+    transform: &Transform,
     label: &str,
     catalog_ref: Option<&str>,
     material: &str,
@@ -290,7 +333,7 @@ fn dim_profile_or_tube(
             .blocks
             .get(block_name)
             .ok_or_else(|| bad("fabdim", "the Part's block definition is missing"))?;
-        part_geometry(block, world_offset)
+        part_geometry(block, transform)
     };
     if bounds.is_empty() {
         return Err(bad(
@@ -364,7 +407,7 @@ fn dim_profile_or_tube(
 fn dim_bent_profile(
     s: &mut Session,
     block_name: &str,
-    world_offset: Vec2,
+    transform: &Transform,
     thickness: f64,
     bend_radius: f64,
     k_factor: f64,
@@ -376,13 +419,13 @@ fn dim_bent_profile(
             .blocks
             .get(block_name)
             .ok_or_else(|| bad("fabdim", "the Part's block definition is missing"))?;
-        let verts = outline_vertices(block, world_offset).ok_or_else(|| {
+        let verts = outline_vertices(block, transform).ok_or_else(|| {
             bad(
                 "fabdim",
                 "this bent profile has no folded outline to dimension",
             )
         })?;
-        let (_, holes) = part_geometry(block, world_offset);
+        let (_, holes) = part_geometry(block, transform);
         (verts, holes)
     };
     if folded.len() < 3 {
@@ -481,6 +524,7 @@ fn dim_bent_profile(
 mod tests {
     use crate::dispatch::execute as fab_execute;
     use cadcraft_engine::Session;
+    use cadcraft_geom::Vec2;
     use serde_json::{Value, json};
 
     fn session_with_sample() -> Session {
@@ -598,5 +642,120 @@ mod tests {
         );
         // 2 flange dims (folded view) + 1 overall dim (flat view).
         assert_eq!(r["dimensions"].as_array().expect("dimensions").len(), 3);
+    }
+
+    // --- Transform: the general INSERT transform, in isolation (hand-worked values) ---
+
+    #[test]
+    fn transform_identity_is_a_no_op() {
+        let t = super::Transform {
+            base: Vec2::ZERO,
+            insert: Vec2::ZERO,
+            scale: Vec2::new(1.0, 1.0),
+            rotation: 0.0,
+        };
+        assert_eq!(t.to_world(Vec2::new(12.0, -7.0)), Vec2::new(12.0, -7.0));
+    }
+
+    #[test]
+    fn transform_handles_scale_and_a_quarter_turn() {
+        // base=(0,0), insert=(0,0), scale=(2,2), rotation=90°: a (40,0) corner should land at
+        // (0,80) and a (0,20) corner at (-40,0) — hand-worked in the code review for this fix.
+        let t = super::Transform {
+            base: Vec2::ZERO,
+            insert: Vec2::ZERO,
+            scale: Vec2::new(2.0, 2.0),
+            rotation: std::f64::consts::FRAC_PI_2,
+        };
+        let a = t.to_world(Vec2::new(40.0, 0.0));
+        let b = t.to_world(Vec2::new(0.0, 20.0));
+        assert!(
+            (a.x - 0.0).abs() < 1e-9 && (a.y - 80.0).abs() < 1e-9,
+            "got {a:?}"
+        );
+        assert!(
+            (b.x - -40.0).abs() < 1e-9 && (b.y - 0.0).abs() < 1e-9,
+            "got {b:?}"
+        );
+    }
+
+    /// End-to-end proof the scale/rotation gap is closed: a Part scaled 2x and rotated 90° by
+    /// cadcraft's own `scale`/`rotate` commands — a normal edit a draftsman might make well after
+    /// `plate` ran — must still dimension against its *current* geometry, not the geometry it had
+    /// when it was first drawn.
+    #[test]
+    fn dimensions_correctly_after_a_real_scale_and_rotate_edit() {
+        let mut s = session_with_sample();
+        let plate = fab_execute(&mut s, "plate", &json!({"width": 40.0, "height": 20.0, "thickness": 2.0, "holes": [{"center": [10.0, 5.0], "diameter": 4.0}]})).expect("plate should draw");
+        let handle = plate["handle"].as_str().expect("handle").to_string();
+
+        // Scale 2x then rotate 90°, both about (0,0) — exactly the plate's own insert point, so
+        // the pivot doesn't move and the hand-worked numbers above apply directly.
+        s.execute(
+            "scale",
+            &json!({"handles": [handle], "base": [0.0, 0.0], "factor": 2.0}),
+        )
+        .expect("scale should succeed");
+        s.execute(
+            "rotate",
+            &json!({"handles": [handle], "base": [0.0, 0.0], "angle": 90.0}),
+        )
+        .expect("rotate should succeed");
+
+        let r = fab_execute(&mut s, "fabdim", &json!({"handle": handle}))
+            .expect("dimensioning a scaled+rotated part must succeed");
+        let dims = r["dimensions"].as_array().expect("dimensions");
+
+        // The original 40×20 plate, scaled 2x (80×40) then rotated 90°, has a 40×80 bounding box.
+        // Read the two overall dimensions' own endpoints back from the drawing: `dim_plate`
+        // creates width (bounds.min → (bounds.max.x, bounds.min.y)) before height.
+        let p13_p14 = |h: &str| -> (cadcraft_geom::Vec2, cadcraft_geom::Vec2) {
+            let doc = s.doc().expect("doc");
+            let handle = cadcraft_doc::Handle::parse_hex(h).expect("valid handle");
+            match &doc.entity(handle).expect("dimension entity exists").kind {
+                cadcraft_doc::EntityKind::Dimension(d) => (d.p13.xy(), d.p14.xy()),
+                other => panic!("expected a Dimension entity, got {other:?}"),
+            }
+        };
+        let (w_p1, w_p2) = p13_p14(dims[0].as_str().expect("width dim handle"));
+        let (h_p1, h_p2) = p13_p14(dims[1].as_str().expect("height dim handle"));
+        let close = |a: cadcraft_geom::Vec2, b: cadcraft_geom::Vec2| {
+            (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6
+        };
+        assert!(
+            close(w_p1, cadcraft_geom::Vec2::new(-40.0, 0.0)),
+            "width dim p1: got {w_p1:?}"
+        );
+        assert!(
+            close(w_p2, cadcraft_geom::Vec2::new(0.0, 0.0)),
+            "width dim p2: got {w_p2:?}"
+        );
+        assert!(
+            close(h_p1, cadcraft_geom::Vec2::new(-40.0, 0.0)),
+            "height dim p1: got {h_p1:?}"
+        );
+        assert!(
+            close(h_p2, cadcraft_geom::Vec2::new(-40.0, 80.0)),
+            "height dim p2: got {h_p2:?}"
+        );
+
+        // The hole (local (10,5), Ø4) lands at world (-10,20), diameter 8 after the same
+        // transform; the table's datum is bounds.min = (-40,0), so its row reads (30.0, 20.0, 8.0).
+        let table_handle = r["holeTable"].as_str().expect("hole table handle");
+        let doc = s.doc().expect("doc");
+        let handle = cadcraft_doc::Handle::parse_hex(table_handle).expect("valid handle");
+        let row = match &doc.entity(handle).expect("table entity exists").kind {
+            // cells[0] = title ("TABELA DE FUROS"), cells[1] = header, cells[2] = first data row.
+            cadcraft_doc::EntityKind::Table(t) => t.cells[2]
+                .iter()
+                .map(|c| c.text.clone())
+                .collect::<Vec<_>>(),
+            other => panic!("expected a Table entity, got {other:?}"),
+        };
+        assert_eq!(
+            row,
+            vec!["1", "8.0", "30.0", "20.0"],
+            "hole position/diameter must reflect the scale+rotate edit, not the original drawing"
+        );
     }
 }
